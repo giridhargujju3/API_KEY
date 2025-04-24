@@ -19,6 +19,9 @@ import {
   ZoomIn, ZoomOut, RefreshCw, Download, Maximize2, Bug
 } from 'lucide-react';
 
+
+
+
 // Define the data point structure
 export interface PerformanceDataPoint {
   timestamp: string;

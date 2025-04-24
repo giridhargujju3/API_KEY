@@ -1,7 +1,9 @@
 import { OllamaEndpointConfig } from './types/model-config';
+import { ApiConfig } from './types/api-config';
 
 export interface ModelSettings {
   ollama: Record<string, Partial<OllamaEndpointConfig>>;
+  api: Record<string, Partial<ApiConfig>>;
 }
 
 interface ModelResponse {
@@ -62,16 +64,184 @@ class ModelService {
     }
   }
 
+  private async callApiEndpoint(prompt: string, config: ApiConfig): Promise<ModelResponse> {
+    const start = Date.now();
+    try {
+      let endpoint = `${config.baseUrl}`;
+      let headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      // Add authorization header based on provider
+      switch (config.provider) {
+        case 'openai':
+          endpoint += '/chat/completions';
+          headers['Authorization'] = `Bearer ${config.apiKey}`;
+          break;
+        case 'google':
+          endpoint += `/models/${config.modelName}:generateContent`;
+          headers['x-goog-api-key'] = config.apiKey;
+          break;
+        case 'anthropic':
+          endpoint += '/messages';
+          headers['x-api-key'] = config.apiKey;
+          headers['anthropic-version'] = '2023-06-01';
+          break;
+        case 'together':
+          endpoint += '/chat/completions';
+          headers['Authorization'] = `Bearer ${config.apiKey}`;
+          break;
+        case 'mistral':
+          endpoint += '/chat/completions';
+          headers['Authorization'] = `Bearer ${config.apiKey}`;
+          break;
+        case 'custom':
+          // For custom endpoints, we'll rely on the baseUrl being complete
+          if (config.headers) {
+            headers = { ...headers, ...config.headers };
+          }
+          break;
+      }
+
+      // Prepare the request body based on provider
+      let body: any;
+      switch (config.provider) {
+        case 'openai':
+        case 'together':
+        case 'mistral':
+          body = {
+            model: config.modelName,
+            messages: [{ role: "user", content: prompt }],
+            temperature: config.temperature || 0.7,
+            max_tokens: config.maxTokens || 1000,
+          };
+          break;
+        case 'anthropic':
+          body = {
+            model: config.modelName,
+            messages: [{ role: "user", content: prompt }],
+            temperature: config.temperature || 0.7,
+            max_tokens: config.maxTokens || 1000,
+          };
+          break;
+        case 'google':
+          body = {
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: config.temperature || 0.7,
+              maxOutputTokens: config.maxTokens || 1000,
+            }
+          };
+          break;
+        case 'custom':
+          // For custom, use OpenAI format as default unless specified
+          if (config.requestFormat === 'anthropic') {
+            body = {
+              model: config.modelName,
+              messages: [{ role: "user", content: prompt }],
+              temperature: config.temperature || 0.7,
+              max_tokens: config.maxTokens || 1000,
+            };
+          } else {
+            // Default to OpenAI format
+            body = {
+              model: config.modelName,
+              messages: [{ role: "user", content: prompt }],
+              temperature: config.temperature || 0.7,
+              max_tokens: config.maxTokens || 1000,
+            };
+          }
+          break;
+      }
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`API error: ${errorData.error?.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      const end = Date.now();
+
+      // Extract response text based on provider API response format
+      let responseText = '';
+      let tokensPerSecond = 0;
+      
+      switch(config.provider) {
+        case 'openai':
+        case 'together':
+        case 'mistral':
+          responseText = data.choices[0]?.message?.content || '';
+          tokensPerSecond = data.usage?.completion_tokens / ((end - start) / 1000) || 0;
+          break;
+        case 'anthropic':
+          responseText = data.content[0]?.text || '';
+          tokensPerSecond = (data.usage?.output_tokens || 0) / ((end - start) / 1000);
+          break;
+        case 'google':
+          responseText = data.candidates[0]?.content?.parts[0]?.text || '';
+          // Google doesn't provide token metrics, estimate based on characters
+          tokensPerSecond = (responseText.length / 4) / ((end - start) / 1000);
+          break;
+        case 'custom':
+          // For custom, try multiple known formats
+          if (data.choices && data.choices[0]?.message) {
+            responseText = data.choices[0].message.content || '';
+          } else if (data.content && data.content[0]) {
+            responseText = data.content[0].text || '';
+          } else if (data.candidates && data.candidates[0]?.content) {
+            responseText = data.candidates[0].content.parts[0].text || '';
+          } else if (data.response) {
+            responseText = data.response;
+          } else {
+            responseText = JSON.stringify(data);
+          }
+          tokensPerSecond = (responseText.length / 4) / ((end - start) / 1000);
+          break;
+      }
+
+      return {
+        text: responseText,
+        responseTime: end - start,
+        tokensPerSecond,
+        provider: config.provider,
+        model: config.modelName,
+      };
+    } catch (error) {
+      return {
+        text: "",
+        responseTime: 0,
+        tokensPerSecond: 0,
+        provider: config.provider,
+        model: config.modelName || "Unknown",
+        error: error.message,
+      };
+    }
+  }
+
   public async compareModels(prompt: string): Promise<ModelResponse[]> {
     const promises: Promise<ModelResponse>[] = [];
-    const config = Object.values(this.settings.ollama)[0];
     
-    if (config?.baseUrl) {
+    // Add Ollama models
+    const ollamaConfig = Object.values(this.settings.ollama)[0];
+    if (ollamaConfig?.baseUrl) {
       promises.push(this.callOllama(prompt));
+    }
+    
+    // Add API models
+    for (const apiConfig of Object.values(this.settings.api)) {
+      if (apiConfig?.enabled && apiConfig?.apiKey) {
+        promises.push(this.callApiEndpoint(prompt, apiConfig as ApiConfig));
+      }
     }
 
     return Promise.all(promises);
   }
 }
 
-export { ModelService }; 
+export { ModelService };

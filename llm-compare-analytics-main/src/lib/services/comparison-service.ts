@@ -1,4 +1,5 @@
 import { OllamaService } from './ollama-service';
+import { ApiService } from './api-service';
 import {
   ProviderConfigs,
   ComparisonResult,
@@ -6,6 +7,7 @@ import {
   ModelMetrics,
   OllamaEndpointConfig,
 } from '../types/model-config';
+import { ApiConfig } from '../types/api-config';
 import { browserLog } from '@/lib/utils/logger';
 
 export class ComparisonService {
@@ -13,14 +15,17 @@ export class ComparisonService {
   private configs: ProviderConfigs;
   private services: {
     ollama: OllamaService[];
+    api: ApiService[];
   };
 
   private constructor() {
     this.configs = {
       ollama: [],
+      api: []
     };
     this.services = {
       ollama: [],
+      api: []
     };
   }
 
@@ -39,6 +44,9 @@ export class ComparisonService {
       ollama: configs.ollama
         .filter(config => config.enabled)
         .map(config => new OllamaService(config)),
+      api: configs.api
+        .filter(config => config.enabled)
+        .map(config => new ApiService(config))
     };
   }
 
@@ -55,8 +63,9 @@ export class ComparisonService {
     browserLog('comparison-request', {
       timestamp: new Date().toISOString(),
       prompt: prompt.substring(0, 100) + (prompt.length > 100 ? '...' : ''),
-      modelCount: activeConfigs.ollama.length,
-      models: activeConfigs.ollama.map(c => c.modelName),
+      modelCount: activeConfigs.ollama.length + activeConfigs.api.length,
+      ollamaModels: activeConfigs.ollama.map(c => c.modelName),
+      apiModels: activeConfigs.api.map(c => c.modelName),
       useStreaming
     });
 
@@ -82,11 +91,8 @@ export class ComparisonService {
         // Store the progress callback
         progressMap.set(config.id, progressCallback);
         
-        // Find the service by ID
-        const serviceIndex = this.services.ollama.findIndex(s => {
-          // Access the ID through the public methods or create a new service
-          return s.getModelInfo(config.modelName)?.name === config.modelName;
-        });
+        // Find the service by ID or create a new one
+        const serviceIndex = this.services.ollama.findIndex(s => s.getModelInfo(config.modelName)?.name === config.modelName);
         
         let service: OllamaService;
         
@@ -116,7 +122,7 @@ export class ComparisonService {
         
         return response;
       } catch (error) {
-        const errorMessage = `Error with model ${config.modelName}: ${error.message}`;
+        const errorMessage = `Error with Ollama model ${config.modelName}: ${error.message}`;
         errors.push(errorMessage);
         
         // Create an error response
@@ -138,10 +144,85 @@ export class ComparisonService {
         return errorResponse;
       }
     });
+    
+    // Process API models
+    const apiPromises = activeConfigs.api.map(async (config) => {
+      try {
+        // Create a progress callback for this model
+        const progressCallback = (progress: number, metrics: ModelMetrics) => {
+          // Dispatch progress event
+          const event = new CustomEvent('model-progress', {
+            detail: {
+              modelId: config.id,
+              progress,
+              metrics
+            }
+          });
+          window.dispatchEvent(event);
+        };
+
+        // Store the progress callback
+        progressMap.set(config.id, progressCallback);
+        
+        // Find the service by ID or create a new one
+        const serviceIndex = this.services.api.findIndex(s => s['config'].id === config.id);
+        
+        let service: ApiService;
+        
+        if (serviceIndex === -1) {
+          // Create a new service if not found
+          service = new ApiService(config);
+          this.services.api.push(service);
+        } else {
+          // Use the existing service
+          service = this.services.api[serviceIndex];
+        }
+        
+        // Generate completion with progress tracking
+        const metrics = await service.generateCompletion(prompt, progressCallback);
+        
+        // Create the response object
+        const response: ModelResponse = {
+          id: config.id,
+          provider: config.provider,
+          model: config.modelName,
+          text: 'Response text will be available in the final result',
+          metrics
+        };
+        
+        // Send a final progress update with the accurate metrics
+        progressCallback(1, metrics);
+        
+        return response;
+      } catch (error) {
+        const errorMessage = `Error with API model ${config.modelName}: ${error.message}`;
+        errors.push(errorMessage);
+        
+        // Create an error response
+        const errorResponse: ModelResponse = {
+          id: config.id,
+          provider: config.provider,
+          model: config.modelName,
+          text: '',
+          metrics: {
+            responseTime: 0,
+            tokensPerSecond: 0,
+            totalTokens: 0,
+            promptTokens: 0,
+            completionTokens: 0
+          },
+          error: error.message
+        };
+        
+        return errorResponse;
+      }
+    });
 
     // Wait for all promises to resolve
-    const responses = await Promise.all(ollamaPromises);
-    results.push(...responses);
+    const ollamaResponses = await Promise.all(ollamaPromises);
+    const apiResponses = await Promise.all(apiPromises);
+    
+    results.push(...ollamaResponses, ...apiResponses);
 
     const endTime = performance.now();
     const totalTime = endTime - startTime;
@@ -179,6 +260,16 @@ export class ComparisonService {
         results[`ollama-${service['config'].id}`] = false;
       }
     }
+    
+    // Test API connections
+    for (const service of this.services.api) {
+      try {
+        const isValid = await service.testConnection();
+        results[`api-${service['config'].id}`] = isValid;
+      } catch {
+        results[`api-${service['config'].id}`] = false;
+      }
+    }
 
     return results;
   }
@@ -212,4 +303,4 @@ export class ComparisonService {
       return false;
     }
   }
-} 
+}

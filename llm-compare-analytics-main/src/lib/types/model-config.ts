@@ -1,3 +1,5 @@
+import { ApiConfig } from './api-config';
+
 export interface BaseModelConfig {
   id: string;
   name: string;
@@ -17,6 +19,7 @@ export interface OllamaEndpointConfig extends BaseModelConfig {
 
 export interface ProviderConfigs {
   ollama: OllamaEndpointConfig[];
+  api: ApiConfig[];
 }
 
 export interface ModelMetrics {
@@ -46,4 +49,4 @@ export interface ComparisonResult {
   responses: ModelResponse[];
   totalTime: number;
   errors?: string[];
-} 
+}
