@@ -64,6 +64,28 @@ class ModelService {
     }
   }
 
+  public async compareModels(prompt: string): Promise<ModelResponse[]> {
+    const promises: Promise<ModelResponse>[] = [];
+    
+    // Add Ollama models
+    const ollamaConfigs = Object.values(this.settings.ollama || {});
+    for (const config of ollamaConfigs) {
+      if (config?.enabled && config?.baseUrl) {
+        promises.push(this.callOllama(prompt));
+      }
+    }
+    
+    // Add API models
+    const apiConfigs = Object.values(this.settings.api || {});
+    for (const config of apiConfigs) {
+      if (config?.enabled && config?.apiKey) {
+        promises.push(this.callApiEndpoint(prompt, config as ApiConfig));
+      }
+    }
+
+    return Promise.all(promises);
+  }
+
   private async callApiEndpoint(prompt: string, config: ApiConfig): Promise<ModelResponse> {
     const start = Date.now();
     try {
@@ -96,7 +118,6 @@ class ModelService {
           headers['Authorization'] = `Bearer ${config.apiKey}`;
           break;
         case 'custom':
-          // For custom endpoints, we'll rely on the baseUrl being complete
           if (config.headers) {
             headers = { ...headers, ...config.headers };
           }
@@ -134,7 +155,6 @@ class ModelService {
           };
           break;
         case 'custom':
-          // For custom, use OpenAI format as default unless specified
           if (config.requestFormat === 'anthropic') {
             body = {
               model: config.modelName,
@@ -143,7 +163,6 @@ class ModelService {
               max_tokens: config.maxTokens || 1000,
             };
           } else {
-            // Default to OpenAI format
             body = {
               model: config.modelName,
               messages: [{ role: "user", content: prompt }],
@@ -185,11 +204,9 @@ class ModelService {
           break;
         case 'google':
           responseText = data.candidates[0]?.content?.parts[0]?.text || '';
-          // Google doesn't provide token metrics, estimate based on characters
           tokensPerSecond = (responseText.length / 4) / ((end - start) / 1000);
           break;
         case 'custom':
-          // For custom, try multiple known formats
           if (data.choices && data.choices[0]?.message) {
             responseText = data.choices[0].message.content || '';
           } else if (data.content && data.content[0]) {
@@ -222,25 +239,6 @@ class ModelService {
         error: error.message,
       };
     }
-  }
-
-  public async compareModels(prompt: string): Promise<ModelResponse[]> {
-    const promises: Promise<ModelResponse>[] = [];
-    
-    // Add Ollama models
-    const ollamaConfig = Object.values(this.settings.ollama)[0];
-    if (ollamaConfig?.baseUrl) {
-      promises.push(this.callOllama(prompt));
-    }
-    
-    // Add API models
-    for (const apiConfig of Object.values(this.settings.api)) {
-      if (apiConfig?.enabled && apiConfig?.apiKey) {
-        promises.push(this.callApiEndpoint(prompt, apiConfig as ApiConfig));
-      }
-    }
-
-    return Promise.all(promises);
   }
 }
 

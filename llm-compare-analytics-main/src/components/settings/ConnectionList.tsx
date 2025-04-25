@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { OllamaConnectionForm } from "./OllamaConnectionForm";
 import { ApiConnectionForm } from "./ApiConnectionForm";
 import { OllamaEndpointConfig } from "@/lib/types/model-config";
-import { ApiConfig, ApiProviderType, PROVIDER_DISPLAY_NAMES } from "@/lib/types/api-config";
+import { ApiConfig } from "@/lib/types/api-config";
 import { ModelSettings } from "@/lib/model-service";
 
 interface ConnectionListProps {
@@ -24,10 +24,12 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
   const handleSaveOllama = (config: OllamaEndpointConfig) => {
     const newSettings = { ...settings };
     
-    newSettings.ollama = {
-      ...newSettings.ollama,
-      [config.id]: config
-    };
+    // Ensure ollama object exists
+    if (!newSettings.ollama) {
+      newSettings.ollama = {};
+    }
+    
+    newSettings.ollama[config.id] = config;
     
     onSave(newSettings);
     setEditingOllama(null);
@@ -37,10 +39,12 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
   const handleSaveApi = (config: ApiConfig) => {
     const newSettings = { ...settings };
     
-    newSettings.api = {
-      ...newSettings.api,
-      [config.id]: config
-    };
+    // Ensure api object exists
+    if (!newSettings.api) {
+      newSettings.api = {};
+    }
+    
+    newSettings.api[config.id] = config;
     
     onSave(newSettings);
     setEditingApi(null);
@@ -51,10 +55,12 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
     const newSettings = { ...settings };
     
     if (type === 'ollama') {
-      const { [id]: _, ...rest } = newSettings.ollama;
+      // Create a new ollama object without the deleted connection
+      const { [id]: _, ...rest } = newSettings.ollama || {};
       newSettings.ollama = rest;
     } else {
-      const { [id]: _, ...rest } = newSettings.api;
+      // Create a new api object without the deleted connection
+      const { [id]: _, ...rest } = newSettings.api || {};
       newSettings.api = rest;
     }
     
@@ -64,22 +70,16 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
   const handleToggleConnection = (id: string, enabled: boolean, type: 'ollama' | 'api') => {
     const newSettings = { ...settings };
     
-    if (type === 'ollama') {
-      const connection = settings.ollama[id];
-      if (connection) {
-        newSettings.ollama = {
-          ...newSettings.ollama,
-          [id]: { ...connection, enabled }
-        };
-      }
-    } else {
-      const connection = settings.api[id];
-      if (connection) {
-        newSettings.api = {
-          ...newSettings.api,
-          [id]: { ...connection, enabled }
-        };
-      }
+    if (type === 'ollama' && newSettings.ollama?.[id]) {
+      newSettings.ollama[id] = {
+        ...newSettings.ollama[id],
+        enabled
+      };
+    } else if (type === 'api' && newSettings.api?.[id]) {
+      newSettings.api[id] = {
+        ...newSettings.api[id],
+        enabled
+      };
     }
     
     onSave(newSettings);
@@ -98,7 +98,6 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
         modelName: "llama2"
       });
     } else {
-      // Default to "together" as the API provider
       setEditingApi({
         id: `api-${Date.now()}`,
         name: "New API Connection",
@@ -156,16 +155,16 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
         <div className="space-y-4">
           {ollamaConnections.length > 0 ? (
             ollamaConnections.map((connection) => (
-              <Card key={connection.id} className="bg-background border-gray-800 overflow-hidden">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-lg flex justify-between items-center">
+              <Card key={connection.id} className="bg-background border-gray-800">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4">
                       <Switch
                         checked={connection.enabled}
                         onCheckedChange={(checked) => handleToggleConnection(connection.id, checked, 'ollama')}
                       />
                       <span>{connection.name}</span>
-                      <Badge variant={connection.enabled ? "default" : "secondary"} className="ml-2">
+                      <Badge variant={connection.enabled ? "default" : "secondary"}>
                         {connection.enabled ? "Active" : "Disabled"}
                       </Badge>
                     </div>
@@ -185,10 +184,8 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
                         Delete
                       </Button>
                     </div>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-sm text-muted-foreground">
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">
                     <div>URL: {connection.baseUrl}</div>
                     <div>Model: {connection.modelName}</div>
                     {connection.context_size && <div>Context Size: {connection.context_size}</div>}
@@ -221,16 +218,16 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
         <div className="space-y-4">
           {apiConnections.length > 0 ? (
             apiConnections.map((connection) => (
-              <Card key={connection.id} className="bg-background border-gray-800 overflow-hidden">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-lg flex justify-between items-center">
+              <Card key={connection.id} className="bg-background border-gray-800">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4">
                       <Switch
                         checked={connection.enabled}
                         onCheckedChange={(checked) => handleToggleConnection(connection.id, checked, 'api')}
                       />
                       <span>{connection.name}</span>
-                      <Badge variant={connection.enabled ? "default" : "secondary"} className="ml-2">
+                      <Badge variant={connection.enabled ? "default" : "secondary"}>
                         {connection.enabled ? "Active" : "Disabled"}
                       </Badge>
                     </div>
@@ -250,11 +247,9 @@ export function ConnectionList({ settings, onSave }: ConnectionListProps) {
                         Delete
                       </Button>
                     </div>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-sm text-muted-foreground">
-                    <div>Provider: {PROVIDER_DISPLAY_NAMES[connection.provider as ApiProviderType]}</div>
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    <div>Provider: {connection.provider}</div>
                     <div>Model: {connection.modelName}</div>
                     <div>URL: {connection.baseUrl}</div>
                   </div>
