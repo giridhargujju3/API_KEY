@@ -125,7 +125,7 @@ app.post('/api/gguf/stop', (req, res) => {
 app.get('/api/gguf/status', (req, res) => {
   try {
     const { port } = req.query;
-    const serverPort = port || 8080;
+    const serverPort = typeof port === 'string' ? port : 8080;
     res.json({ running: !!ggufServers[serverPort] });
   } catch (error) {
     res.status(500).json({ error: error.message });
