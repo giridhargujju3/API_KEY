@@ -132,12 +132,12 @@ export const AVAILABLE_MODELS: Record<ApiProviderType, string[]> = {
     'claude-3-haiku'
   ],
   together: [
-    'llama-2-7b-chat',
-    'llama-2-13b-chat',
-    'llama-2-70b-chat',
-    'mistral-7b-instruct',
-    'falcon-40b-instruct',
-    'codellama-34b-instruct'
+    'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8',
+    'deepseek-ai/DeepSeek-R1',
+    'mistralai/Mistral-Small-24B-Instruct-2501',
+    'Qwen/QwQ-32B',
+    'Qwen/Qwen2.5-Coder-32B-Instruct',
+    'meta-llama/Meta-Llama-Guard-3-8B'
   ],
   mistral: [
     'mistral-tiny',

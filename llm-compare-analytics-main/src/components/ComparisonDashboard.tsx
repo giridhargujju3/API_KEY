@@ -20,6 +20,7 @@ import { generateModelColor } from "@/lib/utils/chart-utils";
 import { browserLog } from "@/lib/utils/logger";
 import { LineChart, BarChart3, Settings2, Wrench, FileText, CheckSquare, RefreshCw, Palette, ScrollText } from "lucide-react";
 import { PostmanTester } from './PostmanTester';
+import { TogetherApiTester } from './ui/TogetherApiTester';
 import { ComparisonService } from "@/lib/services/comparison-service";
 
 interface ModelProgress {
@@ -65,6 +66,7 @@ export function ComparisonDashboard() {
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
   const [isMetricsVerifierOpen, setIsMetricsVerifierOpen] = useState(false);
   const [isPostmanTesterOpen, setIsPostmanTesterOpen] = useState(false);
+  const [isTogetherApiTesterOpen, setIsTogetherApiTesterOpen] = useState(false);
 
   // Load settings from localStorage
   useEffect(() => {
@@ -447,6 +449,16 @@ export function ComparisonDashboard() {
           <Button 
             variant="outline" 
             size="sm" 
+            onClick={() => setIsTogetherApiTesterOpen(true)}
+            title="Together API Test"
+          >
+            <Wrench className="h-4 w-4 mr-1" />
+            Together API
+          </Button>
+          
+          <Button 
+            variant="outline" 
+            size="sm" 
             onClick={() => setIsPostmanTesterOpen(true)}
             title="API Tester"
           >
@@ -636,6 +648,11 @@ export function ComparisonDashboard() {
       <PostmanTester 
         isOpen={isPostmanTesterOpen} 
         onClose={() => setIsPostmanTesterOpen(false)} 
+      />
+
+      <TogetherApiTester 
+        isOpen={isTogetherApiTesterOpen} 
+        onClose={() => setIsTogetherApiTesterOpen(false)} 
       />
     </div>
   );
