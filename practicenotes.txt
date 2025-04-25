@@ -1,0 +1,1311 @@
+import { useState, useEffect, useCallback } from "react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "./ui/card";
+import { Textarea } from "./ui/textarea";
+import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
+import { Label } from "./ui/label";
+import { toast } from "./ui/use-toast";
+import { Badge } from "./ui/badge";
+import { ComparisonCard } from "./ComparisonCard";
+import { AdvancedPerformanceChart } from "./AdvancedPerformanceChart";
+import { ModelSettings } from "./ModelSettings";
+import { ModelColorPicker } from "./ModelColorPicker";
+import { LogViewer } from "./LogViewer";
+import { MetricsVerifier } from "./MetricsVerifier";
+import { EmptyState } from "./EmptyState";
+import { OllamaService } from "@/lib/services/ollama-service";
+import { ApiService } from "@/lib/services/api-service";
+import type { OllamaEndpointConfig, ModelMetrics } from "@/lib/types/model-config";
+import type { ApiConfig } from "@/lib/types/api-config";
+import type { ModelSettings as ModelSettingsType } from "@/lib/model-service";
+import { generateModelColor } from "@/lib/utils/chart-utils";
+import { browserLog } from "@/lib/utils/logger";
+import { LineChart, BarChart3, Settings2, Wrench, FileText, CheckSquare, RefreshCw, Palette, ScrollText } from "lucide-react";
+import { PostmanTester } from './PostmanTester';
+import { ComparisonService } from "@/lib/services/comparison-service";
+
+interface ModelProgress {
+  startTime: number;
+  isComplete: boolean;
+  progress?: number;
+  metrics?: ModelMetrics;
+}
+
+interface ExtendedModelResponse {
+  modelId: string;
+  modelName: string;
+  provider: string;
+  responseTime: number;
+  tokensPerSecond: number;
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  processingTime: number;
+}
+
+interface PerformanceDataPoint {
+  timestamp: string;
+  [key: string]: number | string;
+}
+
+export function ComparisonDashboard() {
+  const [prompt, setPrompt] = useState("");
+  const [isComparing, setIsComparing] = useState(false);
+  const [results, setResults] = useState<ExtendedModelResponse[]>([]);
+  const [modelProgress, setModelProgress] = useState<Record<string, ModelProgress>>({});
+  const [performanceHistory, setPerformanceHistory] = useState<PerformanceDataPoint[]>([]);
+  const [settings, setSettings] = useState<ModelSettingsType>({ ollama: {}, api: {} });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [modelColors, setModelColors] = useState<Record<string, string>>({});
+  const [enabledModels, setEnabledModels] = useState<Array<{
+    id: string;
+    provider: string;
+    name: string;
+    enabled: boolean;
+    baseUrl?: string;
+    modelName?: string;
+    temperature?: number;
+    maxTokens?: number;
+    context_size?: number;
+    threads?: number;
+    apiKey?: string;
+  }>>([]);
+  const [isColorPickerOpen, setIsColorPickerOpen] = useState(false);
+  const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
+  const [isMetricsVerifierOpen, setIsMetricsVerifierOpen] = useState(false);
+  const [isPostmanTesterOpen, setIsPostmanTesterOpen] = useState(false);
+  
+
+  // Load settings from localStorage
+  useEffect(() => {
+    try {
+      const savedSettings = localStorage.getItem("model-settings");
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        if (parsed && typeof parsed === 'object') {
+          setSettings({
+            ollama: parsed.ollama || {},
+            api: parsed.api || {}
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error loading settings from localStorage:", error);
+    }
+  }, []);
+
+  // Process settings to get enabled models
+  useEffect(() => {
+    try {
+      const models = [];
+      
+      // Process Ollama models
+      if (settings && settings.ollama) {
+        for (const [id, modelConfig] of Object.entries(settings.ollama)) {
+          if (!modelConfig) continue;
+          
+          const model = {
+            id,
+            provider: 'ollama',
+            name: modelConfig.name || id,
+            enabled: modelConfig.enabled || false,
+            baseUrl: modelConfig.baseUrl,
+            modelName: modelConfig.modelName,
+            temperature: modelConfig.temperature,
+            maxTokens: modelConfig.maxTokens,
+            context_size: modelConfig.context_size,
+            threads: modelConfig.threads
+          };
+          
+          if (model.enabled) {
+            models.push(model);
+          }
+        }
+      }
+      
+      // Process API models
+      if (settings && settings.api) {
+        for (const [id, modelConfig] of Object.entries(settings.api)) {
+          if (!modelConfig) continue;
+          
+          const model = {
+            id,
+            provider: modelConfig.provider || 'unknown',
+            name: modelConfig.name || id,
+            enabled: modelConfig.enabled || false,
+            baseUrl: modelConfig.baseUrl,
+            modelName: modelConfig.modelName,
+            temperature: modelConfig.temperature,
+            maxTokens: modelConfig.maxTokens,
+            apiKey: modelConfig.apiKey
+          };
+          
+          if (model.enabled) {
+            models.push(model);
+          }
+        }
+      }
+      
+      setEnabledModels(models);
+    } catch (error) {
+      console.error("Error processing settings:", error);
+      setEnabledModels([]);
+    }
+  }, [settings]);
+
+  // Update selectedModelIds when enabledModels changes - ONLY for initial setup
+  useEffect(() => {
+    // Only set selectedModelIds if it's empty (initial load)
+    // This prevents overriding user selections
+    if (selectedModelIds.length === 0 && enabledModels.length > 0) {
+      setSelectedModelIds(enabledModels.map(model => model.id));
+    }
+  }, [enabledModels, selectedModelIds.length]);
+
+  // Initialize model colors when enabled models change
+  useEffect(() => {
+    // Only generate colors for models that don't already have a custom color
+    const newColors: Record<string, string> = { ...modelColors };
+    
+    enabledModels.forEach((model, index) => {
+      if (!newColors[model.name]) {
+        newColors[model.name] = generateModelColor(model.name, index, enabledModels.length);
+      }
+    });
+    
+    setModelColors(newColors);
+  }, [enabledModels, modelColors]);
+
+  const handleModelToggle = (modelId: string, checked: boolean) => {
+    setSelectedModelIds(prev => {
+      const newSelection = checked 
+        ? [...prev, modelId]
+        : prev.filter(id => id !== modelId);
+      
+      // Log the selection change
+      browserLog('model-selection-change', {
+        modelId,
+        checked,
+        previousSelection: prev,
+        newSelection
+      });
+      
+      return newSelection;
+    });
+  };
+
+  const handleColorChange = (modelId: string, color: string) => {
+    // Find the model by ID
+    const model = enabledModels.find(m => m.id === modelId);
+    if (!model) return;
+    
+    // Store the color by model name for the chart
+    setModelColors(prev => {
+      const newColors = {
+        ...prev,
+        [model.name]: color
+      };
+      
+      // Log the color change
+      browserLog('color-change', {
+        modelId,
+        modelName: model.name,
+        color,
+        allColors: newColors
+      });
+      
+      return newColors;
+    });
+  };
+
+  // Function to create a performance data point
+  const createPerformanceDataPoint = useCallback((modelMetrics: ExtendedModelResponse[] = []): PerformanceDataPoint => {
+    const dataPoint: PerformanceDataPoint = {
+      timestamp: new Date().toISOString()
+    };
+    
+    // Add metrics for each model
+    modelMetrics.forEach(metric => {
+      if (metric && metric.modelName) {
+        dataPoint[metric.modelName] = metric.tokensPerSecond;
+      }
+    });
+    
+    // Also add data from model progress for models that are still processing
+    Object.entries(modelProgress).forEach(([modelId, progress]) => {
+      const model = enabledModels.find(m => m.id === modelId);
+      if (!model || !selectedModelIds.includes(modelId)) return;
+      
+      if (progress.metrics && model.name) {
+        // Only add if not already added from modelMetrics
+        if (dataPoint[model.name] === undefined) {
+          dataPoint[model.name] = progress.metrics.tokensPerSecond;
+        }
+      }
+    });
+    
+    return dataPoint;
+  }, [modelProgress, enabledModels, selectedModelIds]);
+
+  // Add interval for updating performance data
+  useEffect(() => {
+    if (!isComparing) return;
+
+    let lastUpdate = performance.now();
+    const updateInterval = 50; // Update every 50ms for smoother lines
+
+    const interval = setInterval(() => {
+      const now = performance.now();
+      const timeDiff = now - lastUpdate;
+      
+      if (timeDiff > updateInterval) {
+        const dataPoint = createPerformanceDataPoint(results);
+        
+        // Update performance history with the new data point
+        setPerformanceHistory(prev => {
+          // Keep a reasonable number of points for performance
+          const maxPoints = 100;
+          const newHistory = [...prev, dataPoint];
+          
+          // If we have too many points, remove older ones
+          return newHistory.length > maxPoints 
+            ? newHistory.slice(-maxPoints) 
+            : newHistory;
+        });
+        
+        lastUpdate = now;
+      }
+    }, updateInterval);
+
+    return () => clearInterval(interval);
+  }, [isComparing, results, modelProgress, createPerformanceDataPoint]);
+
+  // Add event listener for model progress updates
+  useEffect(() => {
+    const handleModelProgress = (event: CustomEvent) => {
+      const { modelId, progress, metrics } = event.detail;
+      
+      // Update model progress
+      setModelProgress(prev => ({
+        ...prev,
+        [modelId]: {
+          ...prev[modelId],
+          progress: progress * 100,
+          metrics
+        }
+      }));
+      
+      // Add a new data point if progress is significant
+      if (progress > 0) {
+        // Find the model name
+        const model = enabledModels.find(m => m.id === modelId);
+        if (model && metrics) {
+          // Create a new data point with the current metrics
+          const newDataPoint = createPerformanceDataPoint(results);
+          // Add this model's current metrics
+          newDataPoint[model.name] = metrics.tokensPerSecond;
+          
+          // Add to performance history
+          setPerformanceHistory(prev => [...prev, newDataPoint]);
+        }
+      }
+    };
+    
+    // Add event listener
+    window.addEventListener('model-progress', handleModelProgress as EventListener);
+    
+    // Remove event listener on cleanup
+    return () => {
+      window.removeEventListener('model-progress', handleModelProgress as EventListener);
+    };
+  }, [enabledModels, results, createPerformanceDataPoint]);
+
+  const handleSettingsChange = (newSettings: ModelSettingsType) => {
+    // Ensure the settings have the correct structure
+    const validatedSettings: ModelSettingsType = {
+      ollama: newSettings.ollama || {},
+      api: newSettings.api || {}
+    };
+    
+    // Log the settings change
+    browserLog('settings-change', {
+      previousSettings: settings,
+      newSettings: validatedSettings
+    });
+    
+    setSettings(validatedSettings);
+    localStorage.setItem("model-settings", JSON.stringify(validatedSettings));
+  };
+
+  const handleCompare = async () => {
+    if (isComparing) return;
+    
+    // Validate input
+    if (prompt.trim() === "") {
+      toast({
+        title: "Empty prompt",
+        description: "Please enter a prompt to compare models.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (selectedModelIds.length === 0) {
+      toast({
+        title: "No models selected",
+        description: "Please select at least one model to compare.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsComparing(true);
+    setResults([]);
+    setModelProgress({});
+    setPerformanceHistory([]);
+    
+    // Only use selected models
+    const modelsToCompare = enabledModels.filter(model => 
+      selectedModelIds.includes(model.id)
+    );
+    
+    // Initialize progress tracking for each model
+    const initialProgress: Record<string, ModelProgress> = {};
+    modelsToCompare.forEach(model => {
+      initialProgress[model.id] = {
+        startTime: Date.now(),
+        isComplete: false
+      };
+    });
+    setModelProgress(initialProgress);
+    
+    // Log the comparison start
+    browserLog('comparison-start', {
+      prompt: prompt.substring(0, 100) + (prompt.length > 100 ? '...' : ''),
+      selectedModelIds,
+      selectedModels: modelsToCompare.map(model => ({ id: model.id, name: model.name, provider: model.provider }))
+    });
+    
+    try {
+      // Start with initial data point
+      const initialDataPoint = createPerformanceDataPoint([]);
+      setPerformanceHistory([initialDataPoint]);
+      
+      // Process each selected model in parallel
+      const promises = modelsToCompare.map(async (model) => {
+        try {
+          if (model.provider === 'ollama') {
+            const ollamaConfig: OllamaEndpointConfig = {
+              id: model.id,
+              name: model.name,
+              enabled: true,
+              provider: 'ollama',
+              baseUrl: model.baseUrl || "http://localhost:11434",
+              modelName: model.modelName || "llama2",
+              temperature: model.temperature,
+              maxTokens: model.maxTokens,
+              context_size: model.context_size,
+              threads: model.threads
+            };
+            
+            const service = new OllamaService(ollamaConfig);
+            
+            let lastProgressUpdate = 0;
+            const metrics = await service.generateCompletion(prompt, (progress, metrics) => {
+              const now = performance.now();
+              if (now - lastProgressUpdate > 50) { // Update every 50ms
+                setModelProgress(prev => ({
+                  ...prev,
+                  [model.id]: {
+                    ...prev[model.id],
+                    progress: progress * 100,
+                    metrics
+                  }
+                }));
+                lastProgressUpdate = now;
+              }
+            });
+            
+            // Update progress to complete
+            setModelProgress(prev => ({
+              ...prev,
+              [model.id]: {
+                ...prev[model.id],
+                isComplete: true,
+                progress: 100,
+                metrics
+              }
+            }));
+
+            const result: ExtendedModelResponse = {
+              modelId: model.id,
+              modelName: model.name,
+              provider: 'ollama',
+              responseTime: metrics.responseTime,
+              tokensPerSecond: metrics.tokensPerSecond,
+              totalTokens: metrics.totalTokens || 0,
+              promptTokens: metrics.promptTokens || 0,
+              completionTokens: metrics.completionTokens || 0,
+              processingTime: metrics.processingTime || 0
+            };
+
+            // Log the individual model result
+            browserLog(`model-result-${model.id}`, {
+              modelId: model.id,
+              modelName: model.name,
+              metrics,
+              result
+            });
+
+            return result;
+          } else {
+            // Handle API model
+            const apiConfig: ApiConfig = {
+              id: model.id,
+              name: model.name,
+              enabled: true,
+              provider: model.provider as any, // Cast to any since we know it's valid
+              baseUrl: model.baseUrl || "",
+              apiKey: model.apiKey || "",
+              modelName: model.modelName || "",
+              temperature: model.temperature,
+              maxTokens: model.maxTokens
+            };
+            
+            const service = new ApiService(apiConfig);
+            
+            let lastProgressUpdate = 0;
+            const metrics = await service.generateCompletion(prompt, (progress, metrics) => {
+              const now = performance.now();
+              if (now - lastProgressUpdate > 50) { // Update every 50ms
+                setModelProgress(prev => ({
+                  ...prev,
+                  [model.id]: {
+                    ...prev[model.id],
+                    progress: progress * 100,
+                    metrics
+                  }
+                }));
+                lastProgressUpdate = now;
+              }
+            });
+            
+            // Update progress to complete
+            setModelProgress(prev => ({
+              ...prev,
+              [model.id]: {
+                ...prev[model.id],
+                isComplete: true,
+                progress: 100,
+                metrics
+              }
+            }));
+
+            const result: ExtendedModelResponse = {
+              modelId: model.id,
+              modelName: model.name,
+              provider: model.provider,
+              responseTime: metrics.responseTime,
+              tokensPerSecond: metrics.tokensPerSecond,
+              totalTokens: metrics.totalTokens || 0,
+              promptTokens: metrics.promptTokens || 0,
+              completionTokens: metrics.completionTokens || 0,
+              processingTime: metrics.processingTime || 0
+            };
+
+            // Log the individual model result
+            browserLog(`model-result-${model.id}`, {
+              modelId: model.id,
+              modelName: model.name,
+              provider: model.provider,
+              metrics,
+              result
+            });
+
+            return result;
+          }
+        } catch (error) {
+          console.error(`Error processing model ${model.id}:`, error);
+          
+          // Log the error
+          browserLog(`model-error-${model.id}`, {
+            modelId: model.id,
+            modelName: model.name,
+            provider: model.provider,
+            error: error.message,
+            stack: error.stack
+          });
+          
+          setModelProgress(prev => ({
+            ...prev,
+            [model.id]: {
+              ...prev[model.id],
+              isComplete: true,
+              progress: 0
+            }
+          }));
+          return null;
+        }
+      });
+
+      const results = (await Promise.all(promises)).filter(Boolean) as ExtendedModelResponse[];
+      
+      // Log the final results
+      browserLog('comparison-complete', {
+        duration: performance.now() - initialProgress[modelsToCompare[0]?.id]?.startTime || 0,
+        results
+      });
+      
+      setResults(results);
+    } catch (error) {
+      console.error("Error comparing models:", error);
+      
+      // Log the error
+      browserLog('comparison-error', {
+        error: error.message,
+        stack: error.stack
+      });
+      
+      toast({
+        title: "Error",
+        description: "An error occurred while comparing models.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsComparing(false);
+    }
+  };
+
+  const handleRefresh = () => {
+    // Reload the page to refresh everything
+    window.location.reload();
+  };
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold">Model Comparison</h1>
+        <div className="flex gap-2">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => setIsLogViewerOpen(true)}
+            title="View Logs"
+          >
+            <ScrollText size={20} />
+          </Button>
+          
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => setIsMetricsVerifierOpen(true)}
+            title="Verify Metrics"
+          >
+            <CheckSquare className="h-4 w-4 mr-1" />
+            Verify
+          </Button>
+          
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => setIsColorPickerOpen(true)}
+            title="Customize Colors"
+          >
+            <Palette size={20} />
+          </Button>
+          
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => setIsPostmanTesterOpen(true)}
+            title="API Tester"
+          >
+            <Wrench className="h-4 w-4 mr-1" />
+            API Test
+          </Button>
+          
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={handleRefresh}
+            title="Refresh Models"
+          >
+            <RefreshCw className="h-4 w-4 mr-1" />
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="p-6">
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-xl font-semibold mb-2">Test Prompt</h2>
+              <Textarea
+                placeholder="Enter your test prompt here..."
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                className="min-h-[120px]"
+              />
+            </div>
+
+            <div>
+              <h2 className="text-xl font-semibold mb-2">Select Models to Compare</h2>
+              {enabledModels.length === 0 ? (
+                <EmptyState
+                  title="No Models Configured"
+                  description="You need to add and enable models in the settings before you can compare them."
+                  actionText="Open Settings"
+                  onAction={() => setIsSettingsOpen(true)}
+                  icon={<Settings2 size={48} />}
+                />
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {enabledModels.map((model) => (
+                    <div key={model.id} className="flex items-center space-x-2 p-2 border rounded-md">
+                      <Checkbox 
+                        id={`model-${model.id}`}
+                        checked={selectedModelIds.includes(model.id)}
+                        onCheckedChange={(checked) => 
+                          handleModelToggle(model.id, checked as boolean)
+                        }
+                      />
+                      <Label htmlFor={`model-${model.id}`} className="flex-1 flex items-center">
+                        <span>{model.name}</span>
+                        <Badge variant="outline" className="ml-2 text-xs">
+                          {model.provider}
+                        </Badge>
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <Button
+                onClick={handleCompare}
+                disabled={isComparing || selectedModelIds.length === 0 || prompt.trim() === ""}
+              >
+                {isComparing ? "Processing..." : "Compare Models"}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {Object.keys(modelProgress).length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Object.entries(modelProgress).map(([modelId, progress]) => {
+            const model = enabledModels.find(m => m.id === modelId);
+            if (!model) return null;
+            
+            return (
+              <ComparisonCard
+                key={model.id}
+                model={model.name}
+                responseTime={progress.metrics?.responseTime || 0}
+                tokensPerSecond={progress.metrics?.tokensPerSecond || 0}
+                qualityScore={0}
+                startTime={progress.startTime}
+                isComplete={progress.isComplete}
+                progress={progress.progress}
+                totalTokens={progress.metrics?.totalTokens}
+                promptTokens={progress.metrics?.promptTokens}
+                completionTokens={progress.metrics?.completionTokens}
+                processingTime={progress.metrics?.processingTime}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        results.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {results.map(result => (
+              <ComparisonCard
+                key={result.modelId}
+                model={result.modelName}
+                responseTime={result.responseTime}
+                tokensPerSecond={result.tokensPerSecond}
+                totalTokens={result.totalTokens}
+                promptTokens={result.promptTokens}
+                completionTokens={result.completionTokens}
+                processingTime={result.processingTime}
+                isComplete={true}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-8">
+            <p className="text-muted-foreground">Select models and enter a prompt to compare</p>
+          </div>
+        )
+      )}
+
+      {/* Performance Chart */}
+      <Card className="col-span-3">
+        <CardHeader>
+          <CardTitle>Performance Metrics</CardTitle>
+          <CardDescription>
+            Visualizing model performance over time
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {performanceHistory.length > 0 ? (
+            <AdvancedPerformanceChart
+              data={performanceHistory}
+              customColors={modelColors}
+              selectedModels={enabledModels
+                .filter(model => selectedModelIds.includes(model.id))
+                .map(model => model.name)
+              }
+              isRealtime={isComparing}
+            />
+          ) : (
+            <EmptyState
+              title="No Performance Data"
+              description="Run a comparison to see performance metrics visualized here."
+              icon={<BarChart3 size={48} />}
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      {isSettingsOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-background p-6 rounded-lg w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <ModelSettings 
+              settings={settings}
+              onSave={handleSettingsChange}
+              onClose={() => setIsSettingsOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {isColorPickerOpen && (
+        <ModelColorPicker
+          isOpen={isColorPickerOpen}
+          onClose={() => setIsColorPickerOpen(false)}
+          models={enabledModels.map(model => ({ id: model.id, name: model.name }))}
+          currentColors={modelColors}
+          onColorChange={handleColorChange}
+        />
+      )}
+      
+      <LogViewer
+        isOpen={isLogViewerOpen}
+        onClose={() => setIsLogViewerOpen(false)}
+      />
+      
+      {isMetricsVerifierOpen && (
+        <MetricsVerifier 
+          isOpen={isMetricsVerifierOpen} 
+          onClose={() => setIsMetricsVerifierOpen(false)}
+          selectedModels={enabledModels.map(m => m.name)}
+        />
+      )}
+      
+      <PostmanTester 
+        isOpen={isPostmanTesterOpen} 
+        onClose={() => setIsPostmanTesterOpen(false)} 
+      />
+    </div>
+  );
+}
+
+------------------------------------------------------------------------ComparisonDashboard.tsx
+
+
+
+import { useState, useMemo } from 'react';
+import { 
+  LineChart, Line, AreaChart, Area, BarChart, Bar, ComposedChart, 
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  Brush, ReferenceLine, Label, Scatter
+} from 'recharts';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Switch } from './ui/switch';
+import { Label as UILabel } from './ui/label';
+import { Slider } from './ui/slider';
+import { Button } from './ui/button';
+import { useTheme } from '../hooks/useTheme';
+import { getChartStyles } from '../lib/utils/chart-utils';
+import { browserLog } from '../lib/utils/logger';
+import { 
+  BarChart3, LineChart as LineChartIcon, PieChart, Activity, 
+  ZoomIn, ZoomOut, RefreshCw, Download, Maximize2, Bug
+} from 'lucide-react';
+
+
+
+
+// Define the data point structure
+export interface PerformanceDataPoint {
+  timestamp: string;
+  [key: string]: number | string | null;
+}
+
+// Define the chart props
+interface AdvancedPerformanceChartProps {
+  data: PerformanceDataPoint[];
+  customColors: Record<string, string>;
+  selectedModels: string[];
+  className?: string;
+  isRealtime?: boolean; // Flag to indicate if this is real-time data or final data
+}
+
+// Define the available metrics
+type MetricType = 'tokensPerSecond' | 'totalTokens' | 'responseTime' | 'processingTime';
+
+export function AdvancedPerformanceChart({
+  data,
+  customColors,
+  selectedModels,
+  className = '',
+  isRealtime = false
+}: AdvancedPerformanceChartProps) {
+  const { isDarkMode } = useTheme();
+  const styles = getChartStyles(isDarkMode);
+  const [metricType, setMetricType] = useState<MetricType>('tokensPerSecond');
+  const [smoothing, setSmoothing] = useState(55);
+  const [showDataPoints, setShowDataPoints] = useState(false);
+  const [syncedTooltip, setSyncedTooltip] = useState(true);
+  const [zoomRange, setZoomRange] = useState([0, 100]);
+  
+  // Process data for continuous lines with better interpolation
+  const processedData = useMemo(() => {
+    if (data.length === 0) return [];
+    
+    // Get all model keys except timestamp
+    let modelKeys = Object.keys(data[0]).filter(key => key !== 'timestamp');
+    
+    // Filter by selected models if provided
+    if (selectedModels.length > 0) {
+      modelKeys = modelKeys.filter(key => selectedModels.includes(key));
+    }
+    
+    // If we only have one data point, duplicate it to create a line
+    if (data.length === 1) {
+      const firstPoint = data[0];
+      const secondPoint = { ...firstPoint };
+      
+      // Create a timestamp 100ms after the first point
+      const firstTime = new Date(firstPoint.timestamp).getTime();
+      secondPoint.timestamp = new Date(firstTime + 100).toISOString();
+      
+      return [firstPoint, secondPoint];
+    }
+    
+    // Create continuous data points with proper interpolation
+    const points: PerformanceDataPoint[] = [];
+    const timeStep = 50; // 50ms between interpolated points for smoothness
+    
+    // Sort data by timestamp to ensure proper ordering
+    const sortedData = [...data].sort((a, b) => 
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    
+    // Ensure all data points have all model keys
+    const allModelKeys = new Set<string>();
+    sortedData.forEach(point => {
+      Object.keys(point).forEach(key => {
+        if (key !== 'timestamp' && (!selectedModels.length || selectedModels.includes(key))) {
+          allModelKeys.add(key);
+        }
+      });
+    });
+    
+    // Normalize all data points to have all model keys
+    const normalizedData = sortedData.map(point => {
+      const newPoint: Record<string, string | number | null> = { timestamp: point.timestamp };
+      allModelKeys.forEach(key => {
+        newPoint[key] = point[key] !== undefined ? point[key] : null;
+      });
+      return newPoint as PerformanceDataPoint;
+    });
+    
+    // Apply smoothing
+    const smoothingWindow = Math.max(2, Math.floor(normalizedData.length * (smoothing / 100)));
+    const smoothedData = normalizedData.map((point, i) => {
+      const smoothedPoint: PerformanceDataPoint = { timestamp: point.timestamp };
+      allModelKeys.forEach(key => {
+        const values = [];
+        for (let j = Math.max(0, i - smoothingWindow); j <= Math.min(normalizedData.length - 1, i + smoothingWindow); j++) {
+          const value = normalizedData[j][key];
+          if (typeof value === 'number' && !isNaN(value)) {
+            values.push(value);
+          }
+        }
+        smoothedPoint[key] = values.length > 0 
+          ? values.reduce((a, b) => a + b, 0) / values.length 
+          : null;
+      });
+      return smoothedPoint;
+    });
+    
+    return smoothedData;
+  }, [data, selectedModels, smoothing]);
+  
+  // Format the timestamp for display
+  const formatAxisTime = (timestamp: string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      hour12: false
+    });
+  };
+  
+  // Format the value for display
+  const formatTooltipValue = (value: number | string) => {
+    if (typeof value !== 'number') return value;
+    
+    if (value === 0) return '0';
+    if (value < 0.01) return value.toExponential(2);
+    if (value < 1) return value.toFixed(2);
+    if (value < 10) return value.toFixed(1);
+    if (value < 100) return value.toFixed(1);
+    
+    return Math.round(value).toString();
+  };
+  
+  // Get the metric label
+  const getMetricLabel = () => {
+    switch (metricType) {
+      case 'tokensPerSecond': return 'Tokens/Second';
+      case 'totalTokens': return 'Total Tokens';
+      case 'responseTime': return 'Response Time (ms)';
+      case 'processingTime': return 'Processing Time (s)';
+      default: return 'Value';
+    }
+  };
+  
+  // Handle metric type change
+  const handleMetricTypeChange = (value: string) => {
+    setMetricType(value as MetricType);
+    browserLog('metric-type-change', { type: value });
+  };
+  
+  // Handle smoothing change
+  const handleSmoothingChange = (value: number[]) => {
+    setSmoothing(value[0]);
+    browserLog('smoothing-change', { value: value[0] });
+  };
+  
+  // Handle zoom level change
+  const handleZoomChange = (value: number[]) => {
+    setZoomRange(value);
+    browserLog('zoom-change', { value });
+  };
+  
+  // Handle data points toggle
+  const handleDataPointsToggle = (checked: boolean) => {
+    setShowDataPoints(checked);
+    browserLog('data-points-toggle', { checked });
+  };
+  
+  // Handle synced tooltip toggle
+  const handleSyncedTooltipToggle = (checked: boolean) => {
+    setSyncedTooltip(checked);
+    browserLog('synced-tooltip-toggle', { checked });
+  };
+  
+  // Handle chart download
+  const handleDownload = () => {
+    try {
+      // Create a canvas from the chart
+      const svgElement = document.querySelector('.recharts-wrapper svg');
+      if (!svgElement) return;
+      
+      const svgData = new XMLSerializer().serializeToString(svgElement);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      // Set canvas dimensions
+      canvas.width = svgElement.clientWidth * 2;
+      canvas.height = svgElement.clientHeight * 2;
+      
+      // Create an image from the SVG
+      const img = new Image();
+      img.onload = () => {
+        if (!ctx) return;
+        
+        // Draw white background
+        ctx.fillStyle = styles.background;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw the image
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        // Convert to PNG and download
+        const dataUrl = canvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = `performance-chart-${new Date().toISOString()}.png`;
+        link.href = dataUrl;
+        link.click();
+        
+        browserLog('chart-download', { timestamp: new Date().toISOString() });
+      };
+      
+      img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+    } catch (error) {
+      console.error('Error downloading chart:', error);
+    }
+  };
+  
+  // Handle reset zoom
+  const handleResetZoom = () => {
+    setZoomRange([0, 100]);
+    browserLog('zoom-reset', { timestamp: new Date().toISOString() });
+  };
+  
+  // Log current chart state
+  const logChartState = () => {
+    browserLog('chart-state', `
+    Models: ${selectedModels.map(model => 
+      `${model}: ${processedData[processedData.length - 1]?.[model] || 'N/A'}`
+    ).join(', ')}
+    - Metric: ${metricType}
+    - Smoothing: ${smoothing}%
+    - Zoom: ${zoomRange[0]}% to ${zoomRange[1]}%
+    `);
+  };
+  
+  // Add a debug function
+  const handleDebug = () => {
+    // Log the current state for debugging
+    browserLog('chart-debug', {
+      timestamp: new Date().toISOString(),
+      data: data.length,
+      processedData: processedData.length,
+      selectedModels,
+      visibleModels: selectedModels.filter(model => 
+        processedData.some(point => point[model] !== undefined && point[model] !== null)
+      ),
+      metricType,
+      smoothing,
+      zoomRange,
+      showDataPoints,
+      syncedTooltip,
+      customColors
+    });
+    
+    // Show an alert with some basic info
+    alert(`Debug info logged:
+- Data points: ${data.length}
+- Processed points: ${processedData.length}
+- Selected models: ${selectedModels.join(', ')}
+- Visible models: ${selectedModels.filter(model => 
+    processedData.some(point => point[model] !== undefined && point[model] !== null)
+  ).join(', ')}
+- Metric: ${metricType}
+- Smoothing: ${smoothing}%
+- Zoom: ${zoomRange[0]}% to ${zoomRange[1]}%
+    `);
+  };
+  
+  return (
+    <Card className={`w-full mt-6 ${className}`}>
+      <CardHeader className="pb-2">
+        <div className="flex justify-between items-center">
+          <div>
+            <CardTitle>Performance Metrics</CardTitle>
+            <CardDescription>
+              Visualizing {getMetricLabel()} for {selectedModels.length} model(s)
+            </CardDescription>
+          </div>
+          <div className="flex space-x-2">
+            <Button variant="outline" size="icon" onClick={handleDebug} title="Debug Chart">
+              <Bug size={16} />
+            </Button>
+            <Button variant="outline" size="icon" onClick={handleResetZoom} title="Reset Zoom">
+              <RefreshCw size={16} />
+            </Button>
+            <Button variant="outline" size="icon" onClick={handleDownload} title="Download Chart">
+              <Download size={16} />
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-4 justify-between">
+            <div className="flex items-center space-x-4">
+              <div className="flex flex-col space-y-1">
+                <UILabel htmlFor="metric-type">Metric</UILabel>
+                <Select value={metricType} onValueChange={(value) => setMetricType(value as MetricType)}>
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="Select metric" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tokensPerSecond">Tokens/Second</SelectItem>
+                    <SelectItem value="totalTokens">Total Tokens</SelectItem>
+                    <SelectItem value="responseTime">Response Time</SelectItem>
+                    <SelectItem value="processingTime">Processing Time</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
+                <Switch
+                  id="show-data-points"
+                  checked={showDataPoints}
+                  onCheckedChange={handleDataPointsToggle}
+                />
+                <UILabel htmlFor="show-data-points">Show Data Points</UILabel>
+              </div>
+              
+              <div className="flex items-center space-x-2">
+                <Switch
+                  id="synced-tooltip"
+                  checked={syncedTooltip}
+                  onCheckedChange={handleSyncedTooltipToggle}
+                />
+                <UILabel htmlFor="synced-tooltip">Sync Tooltips</UILabel>
+              </div>
+            </div>
+          </div>
+          
+          <div className="flex flex-wrap gap-4 justify-between">
+            <div className="flex flex-col space-y-1 w-full max-w-xs">
+              <UILabel htmlFor="smoothing">Smoothing: {smoothing}%</UILabel>
+              <Slider
+                id="smoothing"
+                min={0}
+                max={100}
+                step={1}
+                value={[smoothing]}
+                onValueChange={handleSmoothingChange}
+              />
+            </div>
+            
+            <div className="flex flex-col space-y-1 w-full max-w-xs">
+              <UILabel htmlFor="zoom">Zoom: {zoomRange[0]}% to {zoomRange[1]}%</UILabel>
+              <div className="flex items-center space-x-2">
+                <ZoomOut size={16} />
+                <Slider
+                  id="zoom"
+                  min={0}
+                  max={100}
+                  step={10}
+                  value={zoomRange}
+                  onValueChange={handleZoomChange}
+                  className="flex-1"
+                />
+                <ZoomIn size={16} />
+              </div>
+            </div>
+          </div>
+          
+          <div className="h-[400px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={processedData}>
+                <CartesianGrid 
+                  strokeDasharray="3 3" 
+                  stroke={styles.gridColor} 
+                  opacity={0.2} 
+                />
+                <XAxis 
+                  dataKey="timestamp" 
+                  tickFormatter={formatAxisTime}
+                  stroke={styles.axisColor}
+                  tick={{ fill: styles.textColor }}
+                  axisLine={{ stroke: styles.borderColor }}
+                />
+                <YAxis 
+                  stroke={styles.axisColor}
+                  tickFormatter={formatTooltipValue}
+                  domain={['auto', 'auto']}
+                  tick={{ fill: styles.textColor }}
+                  axisLine={{ stroke: styles.borderColor }}
+                />
+                <Tooltip 
+                  formatter={formatTooltipValue}
+                  labelFormatter={formatAxisTime}
+                  contentStyle={{ 
+                    backgroundColor: styles.tooltipBackground,
+                    border: `1px solid ${styles.borderColor}`,
+                    borderRadius: '6px',
+                    padding: '8px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                  }}
+                  itemStyle={{ color: styles.textColor }}
+                  labelStyle={{ 
+                    color: styles.textColor, 
+                    marginBottom: '4px', 
+                    fontWeight: 500 
+                  }}
+                />
+                <Legend 
+                  wrapperStyle={{ color: styles.textColor }}
+                  formatter={(value) => (
+                    <span style={{ 
+                      color: styles.textColor, 
+                      padding: '0 8px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px' 
+                    }}>
+                      <span style={{ 
+                        width: '12px', 
+                        height: '12px', 
+                        borderRadius: '50%', 
+                        backgroundColor: customColors[value],
+                        display: 'inline-block'
+                      }}/>
+                      {value}
+                    </span>
+                  )}
+                />
+                {selectedModels.map((model) => (
+                  <Line
+                    key={model}
+                    type="monotone"
+                    dataKey={model}
+                    name={model}
+                    stroke={customColors[model]}
+                    strokeWidth={2.5}
+                    dot={showDataPoints}
+                    activeDot={{ r: 6, strokeWidth: 1 }}
+                    isAnimationActive={false}
+                    connectNulls={true}
+                  />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          
+          <div className="flex flex-wrap gap-2">
+            {selectedModels.map(model => (
+              <div 
+                key={model} 
+                className="flex items-center px-2 py-1 rounded-full text-xs"
+                style={{ 
+                  backgroundColor: `${customColors[model]}20`, 
+                  color: customColors[model],
+                  border: `1px solid ${customColors[model]}40`
+                }}
+              >
+                <div 
+                  className="w-2 h-2 rounded-full mr-1"
+                  style={{ backgroundColor: customColors[model] }}
+                />
+                {model}
+              </div>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+} 
+
+
+-------------------------------------------AdvancedPerformanceChart.tsx
