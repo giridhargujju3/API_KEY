@@ -50,14 +50,11 @@ export class ComparisonService {
     };
   }
 
-  public async compareModels(prompt: string, options: { useStreaming?: boolean } = {}): Promise<ComparisonResult> {
+  public async compareModels(prompt: string): Promise<ComparisonResult> {
     const startTime = performance.now();
     const activeConfigs = this.getActiveConfigs();
     const results: ModelResponse[] = [];
     const errors: string[] = [];
-    
-    // Default to streaming for real-time visualization
-    const useStreaming = options.useStreaming !== false;
     
     // Log the comparison request
     browserLog('comparison-request', {
@@ -65,12 +62,8 @@ export class ComparisonService {
       prompt: prompt.substring(0, 100) + (prompt.length > 100 ? '...' : ''),
       modelCount: activeConfigs.ollama.length + activeConfigs.api.length,
       ollamaModels: activeConfigs.ollama.map(c => c.modelName),
-      apiModels: activeConfigs.api.map(c => c.modelName),
-      useStreaming
+      apiModels: activeConfigs.api.map(c => c.modelName)
     });
-
-    // Create a map to track progress for each model
-    const progressMap = new Map<string, (progress: number, metrics: ModelMetrics) => void>();
 
     // Process Ollama models
     const ollamaPromises = activeConfigs.ollama.map(async (config) => {
@@ -87,9 +80,6 @@ export class ComparisonService {
           });
           window.dispatchEvent(event);
         };
-
-        // Store the progress callback
-        progressMap.set(config.id, progressCallback);
         
         // Find the service by ID or create a new one
         const serviceIndex = this.services.ollama.findIndex(s => s.getModelInfo(config.modelName)?.name === config.modelName);
@@ -113,7 +103,7 @@ export class ComparisonService {
           id: config.id,
           provider: 'ollama',
           model: config.modelName,
-          text: 'Response text will be available in the final result',
+          text: '',
           metrics
         };
         
@@ -136,7 +126,8 @@ export class ComparisonService {
             tokensPerSecond: 0,
             totalTokens: 0,
             promptTokens: 0,
-            completionTokens: 0
+            completionTokens: 0,
+            processingTime: 0
           },
           error: error.message
         };
@@ -160,9 +151,6 @@ export class ComparisonService {
           });
           window.dispatchEvent(event);
         };
-
-        // Store the progress callback
-        progressMap.set(config.id, progressCallback);
         
         // Find the service by ID or create a new one
         const serviceIndex = this.services.api.findIndex(s => s['config'].id === config.id);
@@ -186,7 +174,7 @@ export class ComparisonService {
           id: config.id,
           provider: config.provider,
           model: config.modelName,
-          text: 'Response text will be available in the final result',
+          text: '',
           metrics
         };
         
@@ -209,7 +197,8 @@ export class ComparisonService {
             tokensPerSecond: 0,
             totalTokens: 0,
             promptTokens: 0,
-            completionTokens: 0
+            completionTokens: 0,
+            processingTime: 0
           },
           error: error.message
         };
@@ -242,7 +231,11 @@ export class ComparisonService {
       totalTime,
       modelCount: results.length,
       errorCount: errors.length,
-      models: results.map(r => r.model)
+      models: results.map(r => r.model),
+      metrics: results.map(r => ({
+        model: r.model,
+        ...r.metrics
+      }))
     });
 
     return result;

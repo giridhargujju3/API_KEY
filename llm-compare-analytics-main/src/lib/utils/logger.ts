@@ -59,13 +59,19 @@ export function browserLog(key: string, data: LoggableData): void {
       const existingLogs = localStorage.getItem('llm-comparison-logs') || '{}';
       const logs = JSON.parse(existingLogs) as Record<string, LoggableData>;
       
-      // Add new log with timestamp
-      logs[`${key}-${Date.now()}`] = data;
+      // Add timestamp if not present
+      if (typeof data === 'object' && data !== null && !('timestamp' in data)) {
+        (data as Record<string, unknown>).timestamp = new Date().toISOString();
+      }
       
-      // Keep only the last 50 logs to avoid localStorage size limits
+      // Add new log with timestamp in key
+      const timestamp = Date.now();
+      logs[`${key}-${timestamp}`] = data;
+      
+      // Keep only the last 100 logs to avoid localStorage size limits
       const keys = Object.keys(logs).sort();
-      if (keys.length > 50) {
-        const keysToRemove = keys.slice(0, keys.length - 50);
+      if (keys.length > 100) {
+        const keysToRemove = keys.slice(0, keys.length - 100);
         keysToRemove.forEach(k => delete logs[k]);
       }
       
@@ -114,4 +120,4 @@ export function clearBrowserLogs(): void {
   }
 }
 
-export default logger; 
+export default logger;

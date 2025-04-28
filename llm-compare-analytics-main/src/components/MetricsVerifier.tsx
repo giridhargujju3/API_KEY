@@ -116,7 +116,7 @@ export function MetricsVerifier({ isOpen, onClose, selectedModels = [] }: Metric
       
       // Calculate expected tokens per second based on completion tokens and processing time
       if (log.completionTokens > 0 && log.processingTime > 0) {
-        expectedTokensPerSecond = log.completionTokens / (log.processingTime);
+        expectedTokensPerSecond = log.completionTokens / log.processingTime;
       }
       
       const reportedTokensPerSecond = log.tokensPerSecond;
@@ -302,4 +302,4 @@ export function MetricsVerifier({ isOpen, onClose, selectedModels = [] }: Metric
       </DialogContent>
     </Dialog>
   );
-} 
+}
